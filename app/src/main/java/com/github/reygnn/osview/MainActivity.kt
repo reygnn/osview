@@ -31,13 +31,13 @@ class MainActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
 
     // The /proc, /sys and binder reads run here; only the finished text goes to the main thread.
-    // prevStat, cpuZones and lastHeadroom are touched on this thread only.
+    // prevStat, zoneScan and lastHeadroom are touched on this thread only.
     private val worker = HandlerThread("osview-poll").apply { start() }
     private val bg = Handler(worker.looper)
     private var prevStat: Map<String, LongArray>? = null
 
     /** CPU-Thermalzonen (Name -> temp-Pfad), einmalig gesucht. */
-    private var cpuZones: List<Pair<String, String>>? = null
+    private var zoneScan: ZoneScan? = null
     private var lastHeadroom = Float.NaN
 
     private val tick = object : Runnable {
@@ -147,12 +147,13 @@ class MainActivity : Activity() {
     // ---------- Temperatur ----------
 
     private fun thermal(sb: StringBuilder) {
-        val zones = cpuZones ?: findCpuZones().also { cpuZones = it }
-        val temps = zones.mapNotNull { (name, path) -> parseTemp(read(path))?.let { name to it } }
+        val scan = zoneScan ?: findCpuZones().also { zoneScan = it }
+        val temps = scan.cpu.mapNotNull { (name, path) -> parseTemp(read(path))?.let { name to it } }
 
+        val state = tempState(scan, temps.size)
         when {
-            zones.isEmpty() -> sb.append(getString(R.string.temp_no_zones)).append('\n')
-            temps.isEmpty() -> sb.append(getString(R.string.temp_locked)).append('\n')
+            state == TempState.NO_ZONES -> sb.append(getString(R.string.temp_no_zones)).append('\n')
+            state == TempState.LOCKED -> sb.append(getString(R.string.temp_locked)).append('\n')
             temps.size <= MAX_TEMP_LINES -> {
                 var label = "Temp "
                 for ((name, t) in temps) {
@@ -193,19 +194,21 @@ class MainActivity : Activity() {
     }
 
     /** Sucht einmalig alle Thermalzonen, deren Typ nach CPU aussieht. */
-    private fun findCpuZones(): List<Pair<String, String>> {
+    private fun findCpuZones(): ZoneScan {
         val zones = ArrayList<Pair<String, String>>()
+        var unreadable = 0
         var i = 0
         while (i < 256) {
             val base = "/sys/class/thermal/thermal_zone$i"
             if (!File(base).exists()) break
             val type = read("$base/type")
+            if (type == null) unreadable++
             if (type != null && isCpuZone(type.lowercase(Locale.ROOT))) {
                 zones += type to "$base/temp"
             }
             i++
         }
-        return zones
+        return ZoneScan(zones, total = i, unreadable = unreadable)
     }
 
     // ---------- RAM / Swap ----------

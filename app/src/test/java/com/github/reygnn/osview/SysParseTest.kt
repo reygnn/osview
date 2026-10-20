@@ -127,6 +127,30 @@ class SysParseTest {
         }
     }
 
+    private val cpuZone = listOf("cpu0" to "/sys/class/thermal/thermal_zone0/temp")
+
+    @Test
+    fun `tempState is OK as soon as one temperature was read`() {
+        assertEquals(TempState.OK, tempState(ZoneScan(cpuZone, total = 1, unreadable = 0), 1))
+    }
+
+    @Test
+    fun `tempState is LOCKED when zone types exist but can't be read`() {
+        // Samsung A17: seven zones, every type file denied by SELinux.
+        assertEquals(TempState.LOCKED, tempState(ZoneScan(emptyList(), total = 7, unreadable = 7), 0))
+    }
+
+    @Test
+    fun `tempState is LOCKED when CPU zones were found but no temperature reads`() {
+        assertEquals(TempState.LOCKED, tempState(ZoneScan(cpuZone, total = 1, unreadable = 0), 0))
+    }
+
+    @Test
+    fun `tempState is NO_ZONES without zones or without CPU zones among readable ones`() {
+        assertEquals(TempState.NO_ZONES, tempState(ZoneScan(emptyList(), total = 0, unreadable = 0), 0))
+        assertEquals(TempState.NO_ZONES, tempState(ZoneScan(emptyList(), total = 5, unreadable = 0), 0))
+    }
+
     @Test
     fun `thermalStatusName maps known codes and marks unknown ones`() {
         assertEquals("none", thermalStatusName(0))

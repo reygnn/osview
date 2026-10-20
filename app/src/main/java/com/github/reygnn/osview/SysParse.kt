@@ -74,6 +74,28 @@ internal fun parseTemp(raw: String?): Double? {
 internal fun isCpuZone(type: String): Boolean =
     "cpu" in type || type == "big" || type == "mid" || type == "little" || type.startsWith("cluster")
 
+/** Result of one scan over /sys/class/thermal/thermal_zone*. */
+internal class ZoneScan(
+    /** CPU zones as (type, temp path). */
+    val cpu: List<Pair<String, String>>,
+    val total: Int,
+    /** Zones whose type file could not be read (SELinux on e.g. Samsung). */
+    val unreadable: Int,
+)
+
+internal enum class TempState { NO_ZONES, LOCKED, OK }
+
+/**
+ * Which CPU temperature line to show. Zones that exist but can't be read are "locked",
+ * not "no zones" — the device has sensors, the app just isn't allowed to see them.
+ */
+internal fun tempState(scan: ZoneScan, readableTemps: Int): TempState = when {
+    readableTemps > 0 -> TempState.OK
+    scan.cpu.isNotEmpty() -> TempState.LOCKED
+    scan.unreadable > 0 -> TempState.LOCKED
+    else -> TempState.NO_ZONES
+}
+
 internal fun thermalStatusName(status: Int): String = THERMAL_STATUS.getOrNull(status) ?: "?"
 
 internal fun bar(frac: Double): String {
