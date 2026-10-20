@@ -4,7 +4,9 @@ A **tiny htop-style system monitor for Android** — one screen of monospace tex
 refreshed every second. No dependencies, no permissions, a ~20 KB APK.
 
 <p>
-  <img src="docs/screenshots/a17.png" alt="osview on a Samsung Galaxy A17: CPU clocks, temperatures, memory and disk" width="270">
+  <img src="docs/screenshots/pixel9a.png" alt="osview on a Pixel 9a (Android 17): CPU clocks, temperatures, memory and disk" width="270">
+  &nbsp;
+  <img src="docs/screenshots/a17.png" alt="osview on a Samsung Galaxy A17 (Android 16): CPU clocks, temperatures, memory and disk" width="270">
 </p>
 
 ## What it shows
@@ -23,10 +25,10 @@ Polling runs only while the app is visible, on a background thread.
 
 ## What it can't show
 
-An ordinary app sees only what SELinux allows, and vendors differ. On a Samsung
-Galaxy A17, for example, both CPU load and the CPU thermal zones are locked — osview
-then says *locked* rather than guessing, and falls back to what is available (clock
-speeds, battery temperature, thermal headroom). No root, no workarounds.
+An ordinary app sees only what SELinux allows, and vendors differ. On both a Pixel 9a
+and a Samsung Galaxy A17, for example, CPU load, load average and the CPU thermal zones
+are locked — osview then says *locked* rather than guessing, and falls back to what is
+available (clock speeds, battery temperature, thermal headroom). No root, no workarounds.
 
 ## Languages
 
