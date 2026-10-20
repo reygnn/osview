@@ -21,7 +21,8 @@ refreshed every second. No dependencies, no permissions, a ~20 KB APK.
 - **Memory** — RAM, swap, cache and buffers
 - **Disk** — used/total of the data partition
 
-Polling runs only while the app is visible, on a background thread.
+Polling runs only while the app is visible, on a background thread, and allocates
+next to nothing per refresh beyond the text it shows.
 
 ## What it can't show
 
@@ -52,7 +53,8 @@ AndroidX — just the platform and the Kotlin stdlib, shrunk with R8.
 | File | Role |
 |---|---|
 | `MainActivity.kt` | Reads `/proc`, `/sys`, `StatFs`, `PowerManager`, the battery broadcast; renders the text |
-| `SysParse.kt` | Pure parsing and formatting — no Android types, covered by JVM tests |
+| `SysRead.kt` | One reused read buffer for the `/proc` and `/sys` files; skips files SELinux denies |
+| `SysParse.kt` | Pure parsing and formatting on bytes — no Android types, no allocations per tick, covered by JVM tests |
 
 ## License
 

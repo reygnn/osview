@@ -2,6 +2,8 @@ package com.github.reygnn.osview
 
 import android.app.Activity
 import android.app.ActivityManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
@@ -24,39 +26,98 @@ import java.io.File
 import java.util.Locale
 
 private const val INTERVAL_MS = 1000L
+private const val CPU_DIR = "/sys/devices/system/cpu"
 
 class MainActivity : Activity() {
 
     private lateinit var out: TextView
     private lateinit var power: PowerManager
+    private lateinit var activityManager: ActivityManager
     private val main = Handler(Looper.getMainLooper())
 
+    // Resolved once in onCreate; a language change recreates the activity.
+    private lateinit var header: String
+    private lateinit var txtCpuLocked: String
+    private lateinit var txtTempLocked: String
+    private lateinit var txtNoCpuZones: String
+    private lateinit var txtBattery: String
+    private lateinit var txtSwapNone: String
+    private lateinit var txtSwapNa: String
+
     // The /proc, /sys and binder reads run here; only the finished text goes to the main thread.
-    // prevStat, maxKhz, zoneScan and lastHeadroom are touched on this thread only.
     private val worker = HandlerThread("osview-poll").apply { start() }
     private val bg = Handler(worker.looper)
 
-    /** Last /proc/stat sample; cleared on stop so a resume never averages over the pause. */
-    private var prevStat: Map<String, LongArray>? = null
-
-    /** cpuinfo_max_freq per core index — fixed hardware value, cached once it was readable. */
-    private val maxKhz = HashMap<Int, Long>()
-
-    /** CPU-Thermalzonen (Name -> temp-Pfad), einmalig gesucht. */
-    private var zoneScan: ZoneScan? = null
+    // ---- Worker-thread state: touched on the worker only. ----
+    // Everything a tick needs is allocated once and reused, so a tick allocates next to
+    // nothing on this side — essentially the finished String for the TextView.
+    private val sb = StringBuilder(2048)
+    private val reader = ByteReader()
+    private val loadavgSrc = reader.source("/proc/loadavg")
+    private val statSrc = reader.source("/proc/stat")
+    private val meminfoSrc = reader.source("/proc/meminfo")
+    private val mem = MemInfo()
+    private val memFallback = ActivityManager.MemoryInfo()
+    private val dataPath: String = Environment.getDataDirectory().path
+    private var statFs: StatFs? = null
+    private var cpu: Cpu? = null
+    private var zones: Zones? = null
     private var lastHeadroom = Float.NaN
+
+    /** Battery temperature in tenths of °C, from [battery]; Int.MIN_VALUE until known. */
+    private var batteryDeci = Int.MIN_VALUE
+
+    /** Delivered on the worker, and only when the battery state changes — no poll per tick. */
+    private val battery = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            batteryDeci = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+        }
+    }
+
+    /** Hand-over to the main thread: one fixed Runnable instead of a lambda per tick. */
+    @Volatile
+    private var pending = ""
+    private val show = Runnable { out.text = pending }
 
     private val tick = object : Runnable {
         override fun run() {
-            val text = render()
-            main.post { out.text = text }
+            pending = render()
+            main.post(show)
             bg.postDelayed(this, INTERVAL_MS)
         }
+    }
+
+    /** Per-core files and the two /proc/stat samples, set up once the core count is known. */
+    private class Cpu(reader: ByteReader, val count: Int) {
+        val online = Array(count) { reader.source("$CPU_DIR/cpu$it/online") }
+        val cur = Array(count) { reader.source("$CPU_DIR/cpu$it/cpufreq/scaling_cur_freq") }
+        val max = Array(count) { reader.source("$CPU_DIR/cpu$it/cpufreq/cpuinfo_max_freq") }
+
+        /** cpuinfo_max_freq is a fixed hardware value: read until it was readable once. */
+        val maxKhz = LongArray(count) { NO_VALUE }
+        var now = StatSample(count)
+        var prev = StatSample(count)
+    }
+
+    /** CPU thermal zones (found once) with their files and this tick's readings. */
+    private class Zones(reader: ByteReader, val scan: ZoneScan) {
+        val names = scan.cpu.map { it.first }
+        val src = Array(scan.cpu.size) { reader.source(scan.cpu[it].second) }
+        val temps = DoubleArray(scan.cpu.size)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         power = getSystemService(PowerManager::class.java)
+        activityManager = getSystemService(ActivityManager::class.java)
+        header = "${Build.MODEL}  Android ${Build.VERSION.RELEASE}  up "
+        txtCpuLocked = getString(R.string.cpu_locked)
+        txtTempLocked = getString(R.string.temp_locked)
+        txtNoCpuZones = getString(R.string.temp_no_cpu_zones)
+        txtBattery = getString(R.string.battery)
+        txtSwapNone = getString(R.string.swap_none)
+        txtSwapNa = getString(R.string.swap_na)
+
         out = TextView(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 13f
@@ -88,16 +149,27 @@ class MainActivity : Activity() {
     // a tick can never re-post itself after a stop, and a quick stop/start never runs two loops.
     override fun onStart() {
         super.onStart()
+        // ACTION_BATTERY_CHANGED is a protected system broadcast: no export flag needed.
+        // The return value is the current sticky state, so the first frame already has it.
+        val sticky = registerReceiver(battery, IntentFilter(Intent.ACTION_BATTERY_CHANGED), null, bg)
+        val initialBattery = sticky?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
         bg.post {
             bg.removeCallbacks(tick)
+            if (initialBattery != Int.MIN_VALUE) batteryDeci = initialBattery
+            reader.unblockAll()
             tick.run()
         }
     }
 
     override fun onStop() {
+        unregisterReceiver(battery)
         bg.post {
             bg.removeCallbacks(tick)
-            prevStat = null
+            // Drop both samples so a resume never averages over the pause.
+            cpu?.let {
+                it.now.clear()
+                it.prev.clear()
+            }
         }
         super.onStop()
     }
@@ -108,11 +180,15 @@ class MainActivity : Activity() {
     }
 
     private fun render(): String {
-        val sb = StringBuilder(1024)
-        sb.append(Build.MODEL).append("  Android ").append(Build.VERSION.RELEASE)
-            .append("  up ").append(formatUptime(SystemClock.elapsedRealtime() / 1000)).append('\n')
-        read("/proc/loadavg")?.let {
-            sb.append("load ").append(parseLoadavg(it)).append('\n')
+        val sb = sb
+        sb.setLength(0)
+        sb.append(header)
+        appendUptime(sb, SystemClock.elapsedRealtime() / 1000)
+        sb.append('\n')
+        if (reader.read(loadavgSrc)) {
+            sb.append("load ")
+            appendLoadavg(sb, reader.buf, reader.len)
+            sb.append('\n')
         }
         sb.append('\n')
         cpu(sb)
@@ -128,60 +204,65 @@ class MainActivity : Activity() {
     // ---------- CPU ----------
 
     private fun cpu(sb: StringBuilder) {
-        val now = read("/proc/stat")?.let(::parseStat)
-        val prev = prevStat
-        prevStat = now
-        val mode = cpuMode(now, prev)
+        val c = cpu ?: scanCpu().also { cpu = it }
+        val t = c.prev
+        c.prev = c.now
+        c.now = t
+        if (reader.read(statSrc)) parseStat(reader.buf, reader.len, c.now) else c.now.clear()
+        val mode = cpuMode(c.now, c.prev)
 
-        cpuHeader(sb, mode, cpuLoad(now, prev, "cpu"), getString(R.string.cpu_locked))
+        cpuHeader(sb, mode, cpuLoad(c.now, c.prev, 0), txtCpuLocked)
 
-        var i = 0
-        while (true) {
-            val base = "/sys/devices/system/cpu/cpu$i"
-            if (!File(base).exists()) break
-            val name = "cpu$i"
-            if (read("$base/online") == "0") {
-                sb.append(name.padEnd(5)).append("offline\n")
-                i++
+        for (i in 0 until c.count) {
+            if (reader.read(c.online[i]) && parseLong(reader.buf, reader.len) == 0L) {
+                offlineLine(sb, i)
                 continue
             }
-            val cur = read("$base/cpufreq/scaling_cur_freq")?.toLongOrNull()
-            val max = maxKhz[i]
-                ?: read("$base/cpufreq/cpuinfo_max_freq")?.toLongOrNull()?.also { maxKhz[i] = it }
-            coreLine(sb, name, mode, cpuLoad(now, prev, name), cur, max)
-            i++
+            val cur = if (reader.read(c.cur[i])) parseLong(reader.buf, reader.len) else NO_VALUE
+            if (c.maxKhz[i] == NO_VALUE && reader.read(c.max[i])) {
+                c.maxKhz[i] = parseLong(reader.buf, reader.len)
+            }
+            coreLine(sb, i, mode, cpuLoad(c.now, c.prev, i + 1), cur, c.maxKhz[i])
         }
+    }
+
+    /** Counts the cpuN directories once; offline cores keep theirs. */
+    private fun scanCpu(): Cpu {
+        var n = 0
+        while (File("$CPU_DIR/cpu$n").exists()) n++
+        return Cpu(reader, n)
     }
 
     // ---------- Temperatur ----------
 
     private fun thermal(sb: StringBuilder) {
-        val scan = zoneScan ?: findCpuZones().also { zoneScan = it }
-        val temps = scan.cpu.mapNotNull { (name, path) -> parseTemp(read(path))?.let { name to it } }
-
-        when (tempState(scan, temps.size)) {
-            TempState.NO_CPU_ZONES -> sb.append(getString(R.string.temp_no_cpu_zones)).append('\n')
-            TempState.LOCKED -> sb.append(getString(R.string.temp_locked)).append('\n')
-            TempState.OK -> cpuTempLines(sb, temps)
+        val z = zones ?: Zones(reader, findCpuZones()).also { zones = it }
+        var readable = 0
+        for (i in z.src.indices) {
+            val t = if (reader.read(z.src[i])) parseTemp(parseLong(reader.buf, reader.len)) else Double.NaN
+            z.temps[i] = t
+            if (!t.isNaN()) readable++
         }
 
-        // Akku: immer verfügbar über den Sticky-Broadcast (Zehntel °C)
-        val bt = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
-        if (bt != Int.MIN_VALUE) {
-            tempRow(sb, "", getString(R.string.battery), bt / 10.0)
+        when (tempState(z.scan, readable)) {
+            TempState.NO_CPU_ZONES -> sb.append(txtNoCpuZones).append('\n')
+            TempState.LOCKED -> sb.append(txtTempLocked).append('\n')
+            TempState.OK -> cpuTempLines(sb, z.names, z.temps)
         }
+
+        if (batteryDeci != Int.MIN_VALUE) tempRow(sb, "", txtBattery, batteryDeci / 10.0)
 
         // Headroom: 1.0 = Schwelle für starkes Throttling. NaN wenn zu oft abgefragt.
         val h = power.getThermalHeadroom(0)
         if (!h.isNaN()) lastHeadroom = h
-        val status = thermalStatusName(power.currentThermalStatus)
         sb.append("Thrm ")
         if (!lastHeadroom.isNaN()) {
-            sb.append(bar(lastHeadroom.toDouble()))
-                .append(" %.2f ".format(Locale.ROOT, lastHeadroom))
+            appendBar(sb, lastHeadroom.toDouble())
+            sb.append(' ')
+            appendFixed(sb, lastHeadroom.toDouble(), 2)
+            sb.append(' ')
         }
-        sb.append(status).append('\n')
+        sb.append(thermalStatusName(power.currentThermalStatus)).append('\n')
     }
 
     /** Sucht einmalig alle Thermalzonen, deren Typ nach CPU aussieht. */
@@ -192,7 +273,7 @@ class MainActivity : Activity() {
         while (i < 256) {
             val base = "/sys/class/thermal/thermal_zone$i"
             if (!File(base).exists()) break
-            val type = read("$base/type")
+            val type = if (reader.readPath("$base/type")) reader.text() else null
             if (type == null) unreadable++
             if (type != null && isCpuZone(type.lowercase(Locale.ROOT))) {
                 zones += type to "$base/temp"
@@ -205,42 +286,39 @@ class MainActivity : Activity() {
     // ---------- RAM / Swap ----------
 
     private fun mem(sb: StringBuilder) {
-        val mi = read("/proc/meminfo")?.let(::parseMeminfo)
-        val mt = mi?.get("MemTotal")
+        val ok = reader.read(meminfoSrc)
+        if (ok) parseMeminfo(reader.buf, reader.len, mem)
         val total: Long
         val avail: Long
-        if (mi != null && mt != null) {
-            total = mt
-            avail = mi["MemAvailable"] ?: mi["MemFree"] ?: 0L
+        if (ok && mem.total != NO_VALUE) {
+            total = mem.total
+            avail = orElse(mem.available, orElse(mem.free, 0L))
         } else {
-            val info = ActivityManager.MemoryInfo()
-            getSystemService(ActivityManager::class.java).getMemoryInfo(info)
-            total = info.totalMem / 1024
-            avail = info.availMem / 1024
+            activityManager.getMemoryInfo(memFallback)
+            total = memFallback.totalMem / 1024
+            avail = memFallback.availMem / 1024
         }
         usageLine(sb, "Mem", total - avail, total)
 
-        if (mi == null) {
-            sb.append(getString(R.string.swap_na)).append('\n')
+        if (!ok) {
+            sb.append(txtSwapNa).append('\n')
             return
         }
-        val st = mi["SwapTotal"] ?: 0L
-        if (st > 0) usageLine(sb, "Swap", st - (mi["SwapFree"] ?: 0L), st) else sb.append(getString(R.string.swap_none)).append('\n')
-        sb.append("     cache ").append(kb(mi["Cached"] ?: 0L))
-            .append("  buf ").append(kb(mi["Buffers"] ?: 0L)).append('\n')
+        val st = orElse(mem.swapTotal, 0L)
+        if (st > 0) usageLine(sb, "Swap", st - orElse(mem.swapFree, 0L), st) else sb.append(txtSwapNone).append('\n')
+        sb.append("     cache ")
+        appendKb(sb, orElse(mem.cached, 0L))
+        sb.append("  buf ")
+        appendKb(sb, orElse(mem.buffers, 0L))
+        sb.append('\n')
     }
 
     // ---------- Disk ----------
 
     private fun disk(sb: StringBuilder) {
-        val fs = StatFs(Environment.getDataDirectory().path)
+        val fs = statFs?.also { it.restat(dataPath) } ?: StatFs(dataPath).also { statFs = it }
         val total = fs.totalBytes / 1024
         // freeBytes, not availableBytes: the reserved blocks are free, not used (as in df).
         usageLine(sb, "Disk", total - fs.freeBytes / 1024, total)
     }
-
-    // ---------- Helfer ----------
-
-    private fun read(path: String): String? =
-        try { File(path).readText().trim() } catch (e: Exception) { null }
 }

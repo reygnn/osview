@@ -10,11 +10,14 @@ Orientation for sessions touching the tests. The concrete patterns live in
 JVM unit tests (`app/src/test`, `./gradlew testDebugUnitTest`):
 
 ```
-SysParseTest   /proc/stat + CPU-load delta, CPU mode (locked/warmup/load) and the
-               CPU + per-core lines, /proc/meminfo, /proc/loadavg, temperature units
-               (milli/whole/deci) + plausibility, CPU zone names, temperature rows and
-               the >6-zone summary, thermal status, locked-vs-no-CPU-zones decision,
-               bar/pct/kb/deg/uptime formatting, Locale.ROOT
+SysParseTest   byte-level integer parsing, /proc/stat + CPU-load delta, CPU mode
+               (locked/warmup/load) and the CPU + per-core lines, /proc/meminfo,
+               /proc/loadavg, temperature units (milli/whole/deci) + plausibility,
+               CPU zone names, temperature rows and the >6-zone summary, thermal
+               status, locked-vs-no-CPU-zones decision, bar/pct/kb/deg/uptime
+               formatting (deg and kb pinned to String.format), ASCII digits
+SysReadTest    ByteReader: buffer reuse and growth, blocking of never-readable
+               files, unblockAll, retry of files that were readable before
 ```
 
 `isReturnDefaultValues = false`: a plain JVM test that touches an `android.*` API
@@ -26,6 +29,6 @@ throws instead of silently getting 0/null — that is the guard keeping
 - **No Robolectric test yet.** It is on the classpath (mirrors Verso), but nothing
   here needs an Android runtime: `MainActivity` only reads files and system
   services and hands the text to `SysParse.kt`.
-- **No MockK, no coroutines.** The app has neither; the parsers take strings.
+- **No MockK, no coroutines.** The app has neither; the parsers take bytes.
 - **No test of `MainActivity` itself.** Its /proc and /sys reads are device
   behaviour (SELinux decides what an app may read) — verify on the device.
