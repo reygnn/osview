@@ -1,0 +1,18 @@
+# osview version catalog — deliberately almost empty, same as Verso Launcher.
+# NO dependencies IN THE APK: nothing but the Kotlin stdlib (added automatically
+# by AGP 9's built-in Kotlin) and the Android platform APIs. Everything below the
+# core entries is test-only (testImplementation), so it never enters the release.
+[versions]
+agp    = "9.4.1"
+# No kotlin entry: no Kotlin plugin is applied, so AGP's built-in Kotlin sets the version.
+# Test-only.
+junit  = "4.13.2"
+# Test-only — 4.16.1 ships an SDK 36 android-all jar and supports JDK 21.
+robolectric = "4.16.1"
+
+[libraries]
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }

@@ -1,6 +1,6 @@
 // AGP 9+: Kotlin ist eingebaut, kein org.jetbrains.kotlin.android Plugin nötig.
 plugins {
-    id("com.android.application")
+    alias(libs.plugins.android.application)
 }
 
 android {
@@ -26,6 +26,26 @@ android {
         }
     }
 
+    // Java 21 end to end.
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
+    }
+
+    testOptions {
+        unitTests {
+            // Robolectric reads the merged manifest and resources.
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+            all {
+                // Robolectric self-attaches a ByteBuddy agent; JDK 21 wants that opted into.
+                it.jvmArgs("-XX:+EnableDynamicAgentLoading")
+                // Conscrypt breaks on a Turkish-locale host; osview uses no TLS.
+                it.systemProperty("robolectric.conscryptMode", "OFF")
+            }
+        }
+    }
+
     buildFeatures {
         buildConfig = false
         resValues = false
@@ -46,7 +66,9 @@ android {
 }
 
 kotlin {
+    jvmToolchain(21)
     compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
         // Keine Null-Check-Intrinsics generieren
         freeCompilerArgs.addAll(
             "-Xno-param-assertions",
@@ -56,4 +78,9 @@ kotlin {
     }
 }
 
-// Keine dependencies: kotlin-stdlib kommt automatisch, R8 lässt nur Benutztes übrig.
+// No PRODUCTION dependencies: kotlin-stdlib comes automatically, R8 keeps only what's used.
+// Every entry below is testImplementation, so none of it enters the shipped APK.
+dependencies {
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+}

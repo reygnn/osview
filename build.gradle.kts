@@ -1,4 +1,5 @@
+// Top-level build file. AGP 9 ships Kotlin built-in — do NOT add the
+// org.jetbrains.kotlin.android plugin. osview applies NO Kotlin plugins at all.
 plugins {
-    // Version an dein Launcher-Projekt anpassen (AGP 9+ wegen eingebautem Kotlin)
-    id("com.android.application") version "9.2.1" apply false
+    alias(libs.plugins.android.application) apply false
 }
