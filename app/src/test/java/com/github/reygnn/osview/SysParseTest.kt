@@ -267,18 +267,9 @@ class SysParseTest {
     }
 
     @Test
-    fun `parseTemp reads decidegrees when whole degrees are implausible`() {
-        assertEquals(45.0, temp("450"), 1e-9)
-        assertEquals(15.1, temp("151"), 1e-9)
-        assertEquals(99.9, temp("999"), 1e-9)
-        // Plausible as whole degrees: stays whole degrees.
-        assertEquals(100.0, temp("100"), 1e-9)
-        assertEquals(149.0, temp("149"), 1e-9)
-    }
-
-    @Test
     fun `parseTemp rejects implausible or unreadable values`() {
-        for (t in listOf("0", "-5", "-273000", "150000", "abc", "")) {
+        // "255": a driver sentinel, not 25.5 °C.
+        for (t in listOf("0", "-5", "255", "-273000", "150000", "abc", "")) {
             assertTrue(t, temp(t).isNaN())
         }
         assertTrue(parseTemp(NO_VALUE).isNaN())

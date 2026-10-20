@@ -22,7 +22,7 @@ internal const val MAX_TEMP_LINES = 6
 /** "No value" for Long readings — an unreadable or unparsable file. */
 internal const val NO_VALUE = Long.MIN_VALUE
 
-/** Raw values above this magnitude are millidegrees, below it degrees or decidegrees. */
+/** Raw values above this magnitude are millidegrees, below it whole degrees. */
 private const val MILLI_THRESHOLD = 1000L
 
 /** Plausible range in °C; inactive zones often report 0 or -273. */
@@ -299,15 +299,14 @@ internal fun appendLoadavg(sb: StringBuilder, b: ByteArray, len: Int) {
 // ---------- Temperature ----------
 
 /**
- * Raw zone value (millidegrees, degrees or decidegrees) -> °C; NaN when [NO_VALUE] or
- * implausible. Above ±1000 the value is millidegrees. Below, whole degrees win when
- * plausible (so 100 stays 100 °C); otherwise decidegrees are tried (450 -> 45.0 °C).
+ * Raw zone value (millidegrees or degrees) -> °C; NaN when [NO_VALUE] or implausible.
+ * No decidegree guess: thermal zones report millidegrees, and a 150..999 raw value is
+ * more likely a driver sentinel (e.g. 255) than a temperature — better dropped than shown.
  */
 internal fun parseTemp(raw: Long): Double {
     if (raw == NO_VALUE) return Double.NaN
     if (raw > MILLI_THRESHOLD || raw < -MILLI_THRESHOLD) return plausibleTemp(raw / 1000.0)
-    val whole = plausibleTemp(raw.toDouble())
-    return if (!whole.isNaN()) whole else plausibleTemp(raw / 10.0)
+    return plausibleTemp(raw.toDouble())
 }
 
 private fun plausibleTemp(c: Double): Double = if (c > TEMP_MIN_C && c < TEMP_MAX_C) c else Double.NaN

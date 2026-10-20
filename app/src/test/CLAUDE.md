@@ -12,7 +12,7 @@ JVM unit tests (`app/src/test`, `./gradlew testDebugUnitTest`):
 ```
 SysParseTest   byte-level integer parsing, /proc/stat + CPU-load delta, CPU mode
                (locked/warmup/load) and the CPU + per-core lines, /proc/meminfo,
-               /proc/loadavg, temperature units (milli/whole/deci) + plausibility,
+               /proc/loadavg, temperature units (milli/whole) + plausibility,
                CPU zone names, temperature rows and the >6-zone summary, thermal
                status, locked-vs-no-CPU-zones decision, bar/pct/kb/deg/uptime
                formatting (deg and kb pinned to String.format), ASCII digits
