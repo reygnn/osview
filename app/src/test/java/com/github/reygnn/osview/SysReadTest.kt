@@ -55,7 +55,9 @@ class SysReadTest {
         assertEquals(0, r.len)
         assertTrue(src.blocked)
         File(path).writeText("1")
+        r.readPath(File(path).path) // leave content in the buffer
         assertFalse(r.read(src)) // blocked: not even tried
+        assertEquals(0, r.len)
     }
 
     @Test

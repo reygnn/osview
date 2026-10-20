@@ -131,7 +131,7 @@ class MainActivity : Activity() {
             isFillViewport = true
             addView(HorizontalScrollView(context).apply { addView(out) })
             // targetSdk 36 = edge-to-edge erzwungen -> Insets selbst anwenden.
-            // Padding am ScrollView (clipToPadding): gescrollter Text bleibt aus den Systemleisten.
+            // Padding on the ScrollView (clipToPadding): scrolled text stays clear of the system bars.
             setOnApplyWindowInsetsListener { v, insets ->
                 val i = insets.getInsets(
                     WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()

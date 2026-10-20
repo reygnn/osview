@@ -433,7 +433,7 @@ class SysParseTest {
     }
 
     @Test
-    fun `formatUptime splits days, hours and minutes`() {
+    fun `appendUptime splits days, hours and minutes`() {
         assertEquals("0d 00:00", out { appendUptime(it, 59) })
         assertEquals("1d 01:01", out { appendUptime(it, 86400 + 3600 + 60 + 59) })
         assertEquals("12d 23:59", out { appendUptime(it, 12 * 86400 + 86399) })

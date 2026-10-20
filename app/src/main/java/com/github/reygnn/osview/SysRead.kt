@@ -41,7 +41,10 @@ internal class ByteReader(initialCapacity: Int = 8192) {
 
     /** Reads [src] into [buf]; false (and [len] 0) when blocked or unreadable. */
     fun read(src: Source): Boolean {
-        if (src.blocked) return false
+        if (src.blocked) {
+            len = 0
+            return false
+        }
         val ok = readPath(src.path)
         if (ok) src.everRead = true else if (!src.everRead) src.blocked = true
         return ok
