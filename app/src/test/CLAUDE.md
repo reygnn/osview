@@ -12,7 +12,7 @@ JVM unit tests (`app/src/test`, `./gradlew testDebugUnitTest`):
 ```
 SysParseTest   /proc/stat + CPU-load delta, per-core fallback, /proc/meminfo,
                /proc/loadavg, temperature units + plausibility, CPU zone names,
-               thermal status, locked-vs-no-zones decision, bar/pct/kb/deg/uptime
+               thermal status, locked-vs-no-CPU-zones decision, bar/pct/kb/deg/uptime
                formatting, Locale.ROOT
 ```
 

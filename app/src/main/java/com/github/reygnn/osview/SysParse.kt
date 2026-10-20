@@ -83,17 +83,18 @@ internal class ZoneScan(
     val unreadable: Int,
 )
 
-internal enum class TempState { NO_ZONES, LOCKED, OK }
+internal enum class TempState { NO_CPU_ZONES, LOCKED, OK }
 
 /**
- * Which CPU temperature line to show. Zones that exist but can't be read are "locked",
- * not "no zones" — the device has sensors, the app just isn't allowed to see them.
+ * Which CPU temperature line to show. Every Android device has thermal zones, so seeing
+ * none means SELinux hides them (Samsung A17: the app can't even stat thermal_zone*, no
+ * audit log). Only readable zones of which none looks like a CPU are "no CPU zones".
  */
 internal fun tempState(scan: ZoneScan, readableTemps: Int): TempState = when {
     readableTemps > 0 -> TempState.OK
     scan.cpu.isNotEmpty() -> TempState.LOCKED
-    scan.unreadable > 0 -> TempState.LOCKED
-    else -> TempState.NO_ZONES
+    scan.total == 0 || scan.unreadable > 0 -> TempState.LOCKED
+    else -> TempState.NO_CPU_ZONES
 }
 
 internal fun thermalStatusName(status: Int): String = THERMAL_STATUS.getOrNull(status) ?: "?"

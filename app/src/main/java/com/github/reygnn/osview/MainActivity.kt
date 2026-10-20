@@ -152,7 +152,7 @@ class MainActivity : Activity() {
 
         val state = tempState(scan, temps.size)
         when {
-            state == TempState.NO_ZONES -> sb.append(getString(R.string.temp_no_zones)).append('\n')
+            state == TempState.NO_CPU_ZONES -> sb.append(getString(R.string.temp_no_cpu_zones)).append('\n')
             state == TempState.LOCKED -> sb.append(getString(R.string.temp_locked)).append('\n')
             temps.size <= MAX_TEMP_LINES -> {
                 var label = "Temp "

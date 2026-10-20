@@ -146,9 +146,14 @@ class SysParseTest {
     }
 
     @Test
-    fun `tempState is NO_ZONES without zones or without CPU zones among readable ones`() {
-        assertEquals(TempState.NO_ZONES, tempState(ZoneScan(emptyList(), total = 0, unreadable = 0), 0))
-        assertEquals(TempState.NO_ZONES, tempState(ZoneScan(emptyList(), total = 5, unreadable = 0), 0))
+    fun `tempState is LOCKED when no zone is visible at all`() {
+        // Samsung A17 as seen by the app: SELinux denies even the stat on thermal_zone0.
+        assertEquals(TempState.LOCKED, tempState(ZoneScan(emptyList(), total = 0, unreadable = 0), 0))
+    }
+
+    @Test
+    fun `tempState is NO_CPU_ZONES when readable zones contain no CPU zone`() {
+        assertEquals(TempState.NO_CPU_ZONES, tempState(ZoneScan(emptyList(), total = 5, unreadable = 0), 0))
     }
 
     @Test

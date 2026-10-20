@@ -3,7 +3,7 @@
     <string name="app_name" translatable="false">osview</string>
     <!-- Readout messages. Column labels (CPU, Mem, Swap, Disk, Temp, Thrm) stay literal in code, htop style. -->
     <string name="cpu_locked">CPU load locked, bar = clock</string>
-    <string name="temp_no_zones">Temp cpu: no zones</string>
+    <string name="temp_no_cpu_zones">Temp cpu: no CPU zones</string>
     <string name="temp_locked">Temp cpu: locked</string>
     <!-- Row label in a 15-column field: keep it at most 14 characters. -->
     <string name="battery">battery</string>
