@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.os.PowerManager
 import android.os.StatFs
@@ -21,17 +22,18 @@ import java.io.File
 import java.util.Locale
 
 private const val INTERVAL_MS = 1000L
-private const val BAR_W = 16
 private const val MAX_TEMP_LINES = 6
-
-private val THERMAL_STATUS =
-    arrayOf("none", "light", "moderate", "severe", "critical", "emergency", "shutdown")
 
 class MainActivity : Activity() {
 
     private lateinit var out: TextView
     private lateinit var power: PowerManager
-    private val handler = Handler(Looper.getMainLooper())
+    private val main = Handler(Looper.getMainLooper())
+
+    // The /proc, /sys and binder reads run here; only the finished text goes to the main thread.
+    // prevStat, cpuZones and lastHeadroom are touched on this thread only.
+    private val worker = HandlerThread("osview-poll").apply { start() }
+    private val bg = Handler(worker.looper)
     private var prevStat: Map<String, LongArray>? = null
 
     /** CPU-Thermalzonen (Name -> temp-Pfad), einmalig gesucht. */
@@ -40,8 +42,9 @@ class MainActivity : Activity() {
 
     private val tick = object : Runnable {
         override fun run() {
-            out.text = render()
-            handler.postDelayed(this, INTERVAL_MS)
+            val text = render()
+            main.post { out.text = text }
+            bg.postDelayed(this, INTERVAL_MS)
         }
     }
 
@@ -66,23 +69,33 @@ class MainActivity : Activity() {
         setContentView(out)
     }
 
-    // Polling nur solange sichtbar
+    // Polling nur solange sichtbar.
+    // Start and stop are queued on the worker itself, so they serialize with a running tick:
+    // a tick can never re-post itself after a stop, and a quick stop/start never runs two loops.
     override fun onStart() {
         super.onStart()
-        handler.post(tick)
+        bg.post {
+            bg.removeCallbacks(tick)
+            tick.run()
+        }
     }
 
     override fun onStop() {
-        handler.removeCallbacks(tick)
+        bg.post { bg.removeCallbacks(tick) }
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        worker.quitSafely()
+        super.onDestroy()
     }
 
     private fun render(): String {
         val sb = StringBuilder(1024)
         sb.append(Build.MODEL).append("  Android ").append(Build.VERSION.RELEASE)
-            .append("  up ").append(uptime()).append('\n')
+            .append("  up ").append(formatUptime(SystemClock.elapsedRealtime() / 1000)).append('\n')
         read("/proc/loadavg")?.let {
-            sb.append("load ").append(it.split(' ').take(3).joinToString(" ")).append('\n')
+            sb.append("load ").append(parseLoadavg(it)).append('\n')
         }
         sb.append('\n')
         cpu(sb)
@@ -98,17 +111,11 @@ class MainActivity : Activity() {
     // ---------- CPU ----------
 
     private fun cpu(sb: StringBuilder) {
-        val now = readStat()
+        val now = read("/proc/stat")?.let(::parseStat)
         val prev = prevStat
         prevStat = now
 
-        fun load(key: String): Double? {
-            val a = now?.get(key) ?: return null
-            val b = prev?.get(key) ?: return null
-            val dTotal = a[1] - b[1]
-            if (dTotal <= 0) return null
-            return 1.0 - (a[0] - b[0]).toDouble() / dTotal
-        }
+        fun load(key: String): Double? = cpuLoad(now, prev, key)
 
         if (now == null) {
             sb.append("CPU-Last gesperrt, Balken = Takt\n")
@@ -129,8 +136,7 @@ class MainActivity : Activity() {
             val cur = read("$base/cpufreq/scaling_cur_freq")?.toLongOrNull()
             val max = read("$base/cpufreq/cpuinfo_max_freq")?.toLongOrNull()
             val l = load("cpu$i")
-            val frac = l ?: if (cur != null && max != null && max > 0) cur.toDouble() / max else 0.0
-            sb.append(name).append(bar(frac))
+            sb.append(name).append(bar(coreFraction(l, cur, max)))
             if (l != null) sb.append(pct(l))
             if (cur != null) sb.append(' ').append(cur / 1000).append("MHz")
             sb.append('\n')
@@ -138,25 +144,11 @@ class MainActivity : Activity() {
         }
     }
 
-    /** /proc/stat -> name -> [idle, total]; null wenn von SELinux gesperrt. */
-    private fun readStat(): Map<String, LongArray>? {
-        val text = read("/proc/stat") ?: return null
-        val m = HashMap<String, LongArray>()
-        for (line in text.lineSequence()) {
-            if (!line.startsWith("cpu")) break
-            val f = line.split(' ').filter { it.isNotEmpty() }
-            val v = f.drop(1).take(8).map { it.toLongOrNull() ?: 0L }
-            if (v.size < 5) continue
-            m[f[0]] = longArrayOf(v[3] + v[4], v.sum()) // idle + iowait, total
-        }
-        return m
-    }
-
     // ---------- Temperatur ----------
 
     private fun thermal(sb: StringBuilder) {
         val zones = cpuZones ?: findCpuZones().also { cpuZones = it }
-        val temps = zones.mapNotNull { (name, path) -> temp(path)?.let { name to it } }
+        val temps = zones.mapNotNull { (name, path) -> parseTemp(read(path))?.let { name to it } }
 
         when {
             zones.isEmpty() -> sb.append("Temp cpu: keine Zonen\n")
@@ -191,7 +183,7 @@ class MainActivity : Activity() {
         // Headroom: 1.0 = Schwelle für starkes Throttling. NaN wenn zu oft abgefragt.
         val h = power.getThermalHeadroom(0)
         if (!h.isNaN()) lastHeadroom = h
-        val status = THERMAL_STATUS.getOrNull(power.currentThermalStatus) ?: "?"
+        val status = thermalStatusName(power.currentThermalStatus)
         sb.append("Thrm ")
         if (!lastHeadroom.isNaN()) {
             sb.append(bar(lastHeadroom.toDouble()))
@@ -216,23 +208,10 @@ class MainActivity : Activity() {
         return zones
     }
 
-    // Qualcomm: cpu-*, cpuss-*; MediaTek: cpu_*; Tensor/Exynos: big/mid/little
-    private fun isCpuZone(t: String): Boolean =
-        "cpu" in t || t == "big" || t == "mid" || t == "little" || t.startsWith("cluster")
-
-    /** Milligrad oder Grad -> °C; null bei unlesbar oder unplausibel (inaktive Zonen melden oft 0 oder -273). */
-    private fun temp(path: String): Double? {
-        val v = read(path)?.toLongOrNull() ?: return null
-        val c = if (v > 1000 || v < -1000) v / 1000.0 else v.toDouble()
-        return if (c > 0.0 && c < 150.0) c else null
-    }
-
-    private fun deg(c: Double): String = "%5.1f°C".format(Locale.ROOT, c)
-
     // ---------- RAM / Swap ----------
 
     private fun mem(sb: StringBuilder) {
-        val mi = readMeminfo()
+        val mi = read("/proc/meminfo")?.let(::parseMeminfo)
         val mt = mi?.get("MemTotal")
         val total: Long
         val avail: Long
@@ -245,29 +224,16 @@ class MainActivity : Activity() {
             total = info.totalMem / 1024
             avail = info.availMem / 1024
         }
-        line(sb, "Mem", total - avail, total)
+        usageLine(sb, "Mem", total - avail, total)
 
         if (mi == null) {
             sb.append("Swap n/a\n")
             return
         }
         val st = mi["SwapTotal"] ?: 0L
-        if (st > 0) line(sb, "Swap", st - (mi["SwapFree"] ?: 0L), st) else sb.append("Swap keiner\n")
+        if (st > 0) usageLine(sb, "Swap", st - (mi["SwapFree"] ?: 0L), st) else sb.append("Swap keiner\n")
         sb.append("     cache ").append(kb(mi["Cached"] ?: 0L))
             .append("  buf ").append(kb(mi["Buffers"] ?: 0L)).append('\n')
-    }
-
-    /** /proc/meminfo -> Key -> kB */
-    private fun readMeminfo(): Map<String, Long>? {
-        val text = read("/proc/meminfo") ?: return null
-        val m = HashMap<String, Long>()
-        for (line in text.lineSequence()) {
-            val c = line.indexOf(':')
-            if (c < 0) continue
-            m[line.substring(0, c)] =
-                line.substring(c + 1).trim().substringBefore(' ').toLongOrNull() ?: continue
-        }
-        return m
     }
 
     // ---------- Disk ----------
@@ -275,35 +241,11 @@ class MainActivity : Activity() {
     private fun disk(sb: StringBuilder) {
         val fs = StatFs(Environment.getDataDirectory().path)
         val total = fs.totalBytes / 1024
-        line(sb, "Disk", total - fs.availableBytes / 1024, total)
+        usageLine(sb, "Disk", total - fs.availableBytes / 1024, total)
     }
 
     // ---------- Helfer ----------
 
     private fun read(path: String): String? =
         try { File(path).readText().trim() } catch (e: Exception) { null }
-
-    private fun line(sb: StringBuilder, label: String, usedKb: Long, totalKb: Long) {
-        val f = if (totalKb > 0) usedKb.toDouble() / totalKb else 0.0
-        sb.append(label.padEnd(5)).append(bar(f)).append(' ')
-            .append(kb(usedKb)).append('/').append(kb(totalKb)).append('\n')
-    }
-
-    private fun bar(frac: Double): String {
-        val n = (frac.coerceIn(0.0, 1.0) * BAR_W + 0.5).toInt()
-        return "[" + "|".repeat(n) + " ".repeat(BAR_W - n) + "]"
-    }
-
-    private fun pct(f: Double): String = " %3d%%".format((f * 100 + 0.5).toInt())
-
-    private fun kb(k: Long): String = when {
-        k >= 1L shl 20 -> "%.1fG".format(Locale.ROOT, k / 1048576.0)
-        k >= 1L shl 10 -> "%.0fM".format(Locale.ROOT, k / 1024.0)
-        else -> "${k}K"
-    }
-
-    private fun uptime(): String {
-        val s = SystemClock.elapsedRealtime() / 1000
-        return "%dd %02d:%02d".format(s / 86400, s % 86400 / 3600, s % 3600 / 60)
-    }
 }
