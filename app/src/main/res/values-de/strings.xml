@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cpu_locked">CPU-Last gesperrt, Balken = Takt</string>
+    <string name="temp_no_zones">Temp cpu: keine Zonen</string>
+    <string name="temp_locked">Temp cpu: gesperrt</string>
+    <string name="battery">akku</string>
+    <string name="swap_none">Swap keiner</string>
+    <string name="swap_na">Swap n. v.</string>
+</resources>

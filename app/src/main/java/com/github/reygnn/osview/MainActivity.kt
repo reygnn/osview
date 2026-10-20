@@ -118,7 +118,7 @@ class MainActivity : Activity() {
         fun load(key: String): Double? = cpuLoad(now, prev, key)
 
         if (now == null) {
-            sb.append("CPU-Last gesperrt, Balken = Takt\n")
+            sb.append(getString(R.string.cpu_locked)).append('\n')
         } else {
             load("cpu")?.let { sb.append("CPU  ").append(bar(it)).append(pct(it)).append('\n') }
         }
@@ -151,8 +151,8 @@ class MainActivity : Activity() {
         val temps = zones.mapNotNull { (name, path) -> parseTemp(read(path))?.let { name to it } }
 
         when {
-            zones.isEmpty() -> sb.append("Temp cpu: keine Zonen\n")
-            temps.isEmpty() -> sb.append("Temp cpu: gesperrt\n")
+            zones.isEmpty() -> sb.append(getString(R.string.temp_no_zones)).append('\n')
+            temps.isEmpty() -> sb.append(getString(R.string.temp_locked)).append('\n')
             temps.size <= MAX_TEMP_LINES -> {
                 var label = "Temp "
                 for ((name, t) in temps) {
@@ -177,7 +177,7 @@ class MainActivity : Activity() {
         val bt = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
         if (bt != Int.MIN_VALUE) {
-            sb.append("     ").append("akku".padEnd(15)).append(deg(bt / 10.0)).append('\n')
+            sb.append("     ").append(getString(R.string.battery).take(14).padEnd(15)).append(deg(bt / 10.0)).append('\n')
         }
 
         // Headroom: 1.0 = Schwelle für starkes Throttling. NaN wenn zu oft abgefragt.
@@ -227,11 +227,11 @@ class MainActivity : Activity() {
         usageLine(sb, "Mem", total - avail, total)
 
         if (mi == null) {
-            sb.append("Swap n/a\n")
+            sb.append(getString(R.string.swap_na)).append('\n')
             return
         }
         val st = mi["SwapTotal"] ?: 0L
-        if (st > 0) usageLine(sb, "Swap", st - (mi["SwapFree"] ?: 0L), st) else sb.append("Swap keiner\n")
+        if (st > 0) usageLine(sb, "Swap", st - (mi["SwapFree"] ?: 0L), st) else sb.append(getString(R.string.swap_none)).append('\n')
         sb.append("     cache ").append(kb(mi["Cached"] ?: 0L))
             .append("  buf ").append(kb(mi["Buffers"] ?: 0L)).append('\n')
     }
