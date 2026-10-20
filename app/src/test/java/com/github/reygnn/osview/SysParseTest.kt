@@ -65,13 +65,77 @@ class SysParseTest {
         assertNull(cpuLoad(mapOf("cpu" to longArrayOf(0, 100)), now, "cpu"))
     }
 
+    // ---------- CPU mode and lines ----------
+
+    private val prevSample = mapOf("cpu" to longArrayOf(100, 200), "cpu0" to longArrayOf(50, 100))
+    private val nowSample = mapOf("cpu" to longArrayOf(125, 300), "cpu0" to longArrayOf(75, 150))
+
     @Test
-    fun `coreFraction prefers the load, falls back to clock ratio, else zero`() {
-        assertEquals(0.3, coreFraction(0.3, 1000, 2000), 1e-9)
-        assertEquals(0.5, coreFraction(null, 1000, 2000), 1e-9)
-        assertEquals(0.0, coreFraction(null, 1000, 0), 1e-9)
-        assertEquals(0.0, coreFraction(null, null, 2000), 1e-9)
-        assertEquals(0.0, coreFraction(null, 1000, null), 1e-9)
+    fun `cpuMode is LOCKED without a sample, WARMUP without a delta, else LOAD`() {
+        assertEquals(CpuMode.LOCKED, cpuMode(null, prevSample))
+        assertEquals(CpuMode.LOCKED, cpuMode(null, null))
+        assertEquals(CpuMode.WARMUP, cpuMode(nowSample, null))
+        assertEquals(CpuMode.WARMUP, cpuMode(nowSample, nowSample))
+        assertEquals(CpuMode.LOAD, cpuMode(nowSample, prevSample))
+    }
+
+    @Test
+    fun `coreFraction uses the clock ratio only when LOCKED`() {
+        assertEquals(0.5, coreFraction(CpuMode.LOCKED, null, 1000, 2000), 1e-9)
+        assertEquals(0.0, coreFraction(CpuMode.LOCKED, null, 1000, 0), 1e-9)
+        assertEquals(0.0, coreFraction(CpuMode.LOCKED, null, null, 2000), 1e-9)
+        assertEquals(0.0, coreFraction(CpuMode.LOCKED, null, 1000, null), 1e-9)
+        assertEquals(0.3, coreFraction(CpuMode.LOAD, 0.3, 1000, 2000), 1e-9)
+        // No load figure while /proc/stat is readable: empty bar, never the clock.
+        assertEquals(0.0, coreFraction(CpuMode.LOAD, null, 1000, 2000), 1e-9)
+        assertEquals(0.0, coreFraction(CpuMode.WARMUP, null, 1000, 2000), 1e-9)
+    }
+
+    @Test
+    fun `cpuHeader shows the locked text, a placeholder while warming up, else the load`() {
+        val locked = StringBuilder().also { cpuHeader(it, CpuMode.LOCKED, null, "locked!") }
+        assertEquals("locked!\n", locked.toString())
+
+        val warmup = StringBuilder().also { cpuHeader(it, CpuMode.WARMUP, null, "x") }
+        assertEquals("CPU  " + bar(0.0) + PCT_NONE + "\n", warmup.toString())
+
+        val load = StringBuilder().also { cpuHeader(it, CpuMode.LOAD, 0.75, "x") }
+        assertEquals("CPU  " + bar(0.75) + "  75%\n", load.toString())
+    }
+
+    @Test
+    fun `coreLine shows the clock bar without a load column when LOCKED`() {
+        val sb = StringBuilder()
+        coreLine(sb, "cpu0", CpuMode.LOCKED, null, 1_000_000, 2_000_000)
+        assertEquals("cpu0 " + bar(0.5) + " 1000MHz\n", sb.toString())
+    }
+
+    @Test
+    fun `coreLine shows an empty bar and placeholder while warming up`() {
+        val sb = StringBuilder()
+        coreLine(sb, "cpu0", CpuMode.WARMUP, null, 1_000_000, 2_000_000)
+        assertEquals("cpu0 " + bar(0.0) + PCT_NONE + " 1000MHz\n", sb.toString())
+    }
+
+    @Test
+    fun `coreLine shows the load, and a placeholder for a core without a stat line`() {
+        val withLoad = StringBuilder().also { coreLine(it, "cpu1", CpuMode.LOAD, 0.5, 1_800_000, 2_000_000) }
+        assertEquals("cpu1 " + bar(0.5) + "  50%" + " 1800MHz\n", withLoad.toString())
+
+        val missing = StringBuilder().also { coreLine(it, "cpu2", CpuMode.LOAD, null, 1_800_000, 2_000_000) }
+        assertEquals("cpu2 " + bar(0.0) + PCT_NONE + " 1800MHz\n", missing.toString())
+    }
+
+    @Test
+    fun `coreLine omits the clock when it is unreadable`() {
+        val sb = StringBuilder()
+        coreLine(sb, "cpu10", CpuMode.LOAD, 0.25, null, null)
+        assertEquals("cpu10" + bar(0.25) + "  25%\n", sb.toString())
+    }
+
+    @Test
+    fun `PCT_NONE is as wide as pct`() {
+        assertEquals(pct(0.5).length, PCT_NONE.length)
     }
 
     // ---------- /proc/meminfo, /proc/loadavg ----------
@@ -109,8 +173,19 @@ class SysParseTest {
     }
 
     @Test
+    fun `parseTemp reads decidegrees when whole degrees are implausible`() {
+        assertEquals(45.0, parseTemp("450")!!, 1e-9)
+        assertEquals(15.1, parseTemp("151")!!, 1e-9)
+        assertEquals(99.9, parseTemp("999")!!, 1e-9)
+        // Plausible as whole degrees: stays whole degrees.
+        assertEquals(100.0, parseTemp("100")!!, 1e-9)
+        assertEquals(149.0, parseTemp("149")!!, 1e-9)
+    }
+
+    @Test
     fun `parseTemp rejects implausible or unreadable values`() {
         assertNull(parseTemp("0"))
+        assertNull(parseTemp("-5"))
         assertNull(parseTemp("-273000"))
         assertNull(parseTemp("150000"))
         assertNull(parseTemp("abc"))
@@ -154,6 +229,40 @@ class SysParseTest {
     @Test
     fun `tempState is NO_CPU_ZONES when readable zones contain no CPU zone`() {
         assertEquals(TempState.NO_CPU_ZONES, tempState(ZoneScan(emptyList(), total = 5, unreadable = 0), 0))
+    }
+
+    @Test
+    fun `cpuTempLines lists up to six zones with the label on the first row only`() {
+        val sb = StringBuilder()
+        cpuTempLines(sb, listOf("cpu-0-0-usr" to 41.5, "a-very-long-zone-name" to 42.0))
+        assertEquals(
+            "Temp cpu-0-0-usr    " + deg(41.5) + "\n" +
+                "     a-very-long-zo " + deg(42.0) + "\n",
+            sb.toString(),
+        )
+    }
+
+    @Test
+    fun `cpuTempLines summarises more than six zones in the shared value column`() {
+        val temps = (1..8).map { "cpu$it" to 40.0 + it } // 41..48 -> average 44.5
+        val sb = StringBuilder()
+        cpuTempLines(sb, temps)
+        assertEquals("Temp cpu Ø (8)      " + deg(44.5) + "  max " + deg(48.0) + "\n", sb.toString())
+    }
+
+    @Test
+    fun `cpuTempLines with exactly six zones still lists them`() {
+        val sb = StringBuilder()
+        cpuTempLines(sb, (1..MAX_TEMP_LINES).map { "z$it" to 40.0 })
+        assertEquals(MAX_TEMP_LINES, sb.lines().count { it.isNotEmpty() })
+    }
+
+    @Test
+    fun `tempRow puts the value in the same column for every row`() {
+        val cpu = StringBuilder().also { tempRow(it, "Temp", "cpu Ø (12)", 44.0, "  max " + deg(50.0)) }
+        val battery = StringBuilder().also { tempRow(it, "", "battery", 31.0) }
+        assertEquals(cpu.indexOf(deg(44.0)), battery.indexOf(deg(31.0)))
+        assertEquals("     battery        " + deg(31.0) + "\n", battery.toString())
     }
 
     @Test

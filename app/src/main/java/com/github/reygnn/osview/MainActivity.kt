@@ -17,12 +17,13 @@ import android.os.PowerManager
 import android.os.StatFs
 import android.os.SystemClock
 import android.view.WindowInsets
+import android.widget.HorizontalScrollView
+import android.widget.ScrollView
 import android.widget.TextView
 import java.io.File
 import java.util.Locale
 
 private const val INTERVAL_MS = 1000L
-private const val MAX_TEMP_LINES = 6
 
 class MainActivity : Activity() {
 
@@ -31,10 +32,15 @@ class MainActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
 
     // The /proc, /sys and binder reads run here; only the finished text goes to the main thread.
-    // prevStat, zoneScan and lastHeadroom are touched on this thread only.
+    // prevStat, maxKhz, zoneScan and lastHeadroom are touched on this thread only.
     private val worker = HandlerThread("osview-poll").apply { start() }
     private val bg = Handler(worker.looper)
+
+    /** Last /proc/stat sample; cleared on stop so a resume never averages over the pause. */
     private var prevStat: Map<String, LongArray>? = null
+
+    /** cpuinfo_max_freq per core index — fixed hardware value, cached once it was readable. */
+    private val maxKhz = HashMap<Int, Long>()
 
     /** CPU-Thermalzonen (Name -> temp-Pfad), einmalig gesucht. */
     private var zoneScan: ZoneScan? = null
@@ -55,8 +61,16 @@ class MainActivity : Activity() {
             typeface = Typeface.MONOSPACE
             textSize = 13f
             setTextColor(0xFFD0D0D0.toInt())
+        }
+        // Scrollable in both directions: with a large font scale or many cores the text no
+        // longer fits. Horizontally the TextView gets unbounded width, so lines never wrap
+        // and the columns stay aligned.
+        val root = ScrollView(this).apply {
             setBackgroundColor(Color.BLACK)
-            // targetSdk 36 = edge-to-edge erzwungen -> Insets selbst anwenden
+            isFillViewport = true
+            addView(HorizontalScrollView(context).apply { addView(out) })
+            // targetSdk 36 = edge-to-edge erzwungen -> Insets selbst anwenden.
+            // Padding am ScrollView (clipToPadding): gescrollter Text bleibt aus den Systemleisten.
             setOnApplyWindowInsetsListener { v, insets ->
                 val i = insets.getInsets(
                     WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
@@ -66,7 +80,7 @@ class MainActivity : Activity() {
                 insets
             }
         }
-        setContentView(out)
+        setContentView(root)
     }
 
     // Polling nur solange sichtbar.
@@ -81,7 +95,10 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
-        bg.post { bg.removeCallbacks(tick) }
+        bg.post {
+            bg.removeCallbacks(tick)
+            prevStat = null
+        }
         super.onStop()
     }
 
@@ -114,32 +131,24 @@ class MainActivity : Activity() {
         val now = read("/proc/stat")?.let(::parseStat)
         val prev = prevStat
         prevStat = now
+        val mode = cpuMode(now, prev)
 
-        fun load(key: String): Double? = cpuLoad(now, prev, key)
-
-        if (now == null) {
-            sb.append(getString(R.string.cpu_locked)).append('\n')
-        } else {
-            load("cpu")?.let { sb.append("CPU  ").append(bar(it)).append(pct(it)).append('\n') }
-        }
+        cpuHeader(sb, mode, cpuLoad(now, prev, "cpu"), getString(R.string.cpu_locked))
 
         var i = 0
         while (true) {
             val base = "/sys/devices/system/cpu/cpu$i"
             if (!File(base).exists()) break
-            val name = "cpu$i".padEnd(5)
+            val name = "cpu$i"
             if (read("$base/online") == "0") {
-                sb.append(name).append("offline\n")
+                sb.append(name.padEnd(5)).append("offline\n")
                 i++
                 continue
             }
             val cur = read("$base/cpufreq/scaling_cur_freq")?.toLongOrNull()
-            val max = read("$base/cpufreq/cpuinfo_max_freq")?.toLongOrNull()
-            val l = load("cpu$i")
-            sb.append(name).append(bar(coreFraction(l, cur, max)))
-            if (l != null) sb.append(pct(l))
-            if (cur != null) sb.append(' ').append(cur / 1000).append("MHz")
-            sb.append('\n')
+            val max = maxKhz[i]
+                ?: read("$base/cpufreq/cpuinfo_max_freq")?.toLongOrNull()?.also { maxKhz[i] = it }
+            coreLine(sb, name, mode, cpuLoad(now, prev, name), cur, max)
             i++
         }
     }
@@ -150,35 +159,17 @@ class MainActivity : Activity() {
         val scan = zoneScan ?: findCpuZones().also { zoneScan = it }
         val temps = scan.cpu.mapNotNull { (name, path) -> parseTemp(read(path))?.let { name to it } }
 
-        val state = tempState(scan, temps.size)
-        when {
-            state == TempState.NO_CPU_ZONES -> sb.append(getString(R.string.temp_no_cpu_zones)).append('\n')
-            state == TempState.LOCKED -> sb.append(getString(R.string.temp_locked)).append('\n')
-            temps.size <= MAX_TEMP_LINES -> {
-                var label = "Temp "
-                for ((name, t) in temps) {
-                    sb.append(label).append(name.take(14).padEnd(15)).append(deg(t)).append('\n')
-                    label = "     "
-                }
-            }
-            else -> {
-                var max = temps[0].second
-                var sum = 0.0
-                for ((_, t) in temps) {
-                    sum += t
-                    if (t > max) max = t
-                }
-                sb.append("Temp cpu Ø ").append(deg(sum / temps.size))
-                    .append("  max ").append(deg(max))
-                    .append(" (").append(temps.size).append(")\n")
-            }
+        when (tempState(scan, temps.size)) {
+            TempState.NO_CPU_ZONES -> sb.append(getString(R.string.temp_no_cpu_zones)).append('\n')
+            TempState.LOCKED -> sb.append(getString(R.string.temp_locked)).append('\n')
+            TempState.OK -> cpuTempLines(sb, temps)
         }
 
         // Akku: immer verfügbar über den Sticky-Broadcast (Zehntel °C)
         val bt = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
         if (bt != Int.MIN_VALUE) {
-            sb.append("     ").append(getString(R.string.battery).take(14).padEnd(15)).append(deg(bt / 10.0)).append('\n')
+            tempRow(sb, "", getString(R.string.battery), bt / 10.0)
         }
 
         // Headroom: 1.0 = Schwelle für starkes Throttling. NaN wenn zu oft abgefragt.
@@ -244,7 +235,8 @@ class MainActivity : Activity() {
     private fun disk(sb: StringBuilder) {
         val fs = StatFs(Environment.getDataDirectory().path)
         val total = fs.totalBytes / 1024
-        usageLine(sb, "Disk", total - fs.availableBytes / 1024, total)
+        // freeBytes, not availableBytes: the reserved blocks are free, not used (as in df).
+        usageLine(sb, "Disk", total - fs.freeBytes / 1024, total)
     }
 
     // ---------- Helfer ----------

@@ -36,7 +36,10 @@ android {
         unitTests {
             // Robolectric reads the merged manifest and resources.
             isIncludeAndroidResources = true
-            isReturnDefaultValues = true
+            // Plain JVM tests fail loudly on any android.* call instead of getting silent
+            // 0/null/false from the stub jar — SysParse.kt must stay free of Android types.
+            // (Robolectric tests are unaffected: they run against a real android-all jar.)
+            isReturnDefaultValues = false
             all {
                 // Robolectric self-attaches a ByteBuddy agent; JDK 21 wants that opted into.
                 it.jvmArgs("-XX:+EnableDynamicAgentLoading")

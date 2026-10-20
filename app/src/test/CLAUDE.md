@@ -10,11 +10,16 @@ Orientation for sessions touching the tests. The concrete patterns live in
 JVM unit tests (`app/src/test`, `./gradlew testDebugUnitTest`):
 
 ```
-SysParseTest   /proc/stat + CPU-load delta, per-core fallback, /proc/meminfo,
-               /proc/loadavg, temperature units + plausibility, CPU zone names,
-               thermal status, locked-vs-no-CPU-zones decision, bar/pct/kb/deg/uptime
-               formatting, Locale.ROOT
+SysParseTest   /proc/stat + CPU-load delta, CPU mode (locked/warmup/load) and the
+               CPU + per-core lines, /proc/meminfo, /proc/loadavg, temperature units
+               (milli/whole/deci) + plausibility, CPU zone names, temperature rows and
+               the >6-zone summary, thermal status, locked-vs-no-CPU-zones decision,
+               bar/pct/kb/deg/uptime formatting, Locale.ROOT
 ```
+
+`isReturnDefaultValues = false`: a plain JVM test that touches an `android.*` API
+throws instead of silently getting 0/null — that is the guard keeping
+`SysParse.kt` Android-free.
 
 ## Deliberately not
 

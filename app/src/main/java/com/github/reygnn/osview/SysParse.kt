@@ -7,7 +7,13 @@ import java.util.Locale
 
 internal const val BAR_W = 16
 
-/** Raw values above this magnitude are millidegrees, below it whole degrees. */
+/** Stands in the percentage column (same width as [pct]) while there is no load figure. */
+internal const val PCT_NONE = "  --%"
+
+/** Up to this many CPU zones are listed one per line; more are summarised in one line. */
+internal const val MAX_TEMP_LINES = 6
+
+/** Raw values above this magnitude are millidegrees, below it degrees or decidegrees. */
 private const val MILLI_THRESHOLD = 1000L
 
 /** Plausible range in °C; inactive zones often report 0 or -273. */
@@ -43,9 +49,48 @@ internal fun cpuLoad(
     return 1.0 - (a[0] - b[0]).toDouble() / dTotal
 }
 
-/** Bar fill for one core: the measured load, else the clock relative to its max, else empty. */
-internal fun coreFraction(load: Double?, curKhz: Long?, maxKhz: Long?): Double =
-    load ?: if (curKhz != null && maxKhz != null && maxKhz > 0) curKhz.toDouble() / maxKhz else 0.0
+/**
+ * What the CPU bars mean in this frame. LOCKED: /proc/stat is unreadable, bars show the
+ * clock (and the screen says so). WARMUP: readable, but there is no previous sample to
+ * form a delta yet (first frame after start or resume). LOAD: bars show the measured load.
+ */
+internal enum class CpuMode { LOCKED, WARMUP, LOAD }
+
+internal fun cpuMode(now: Map<String, LongArray>?, prev: Map<String, LongArray>?): CpuMode = when {
+    now == null -> CpuMode.LOCKED
+    cpuLoad(now, prev, "cpu") == null -> CpuMode.WARMUP
+    else -> CpuMode.LOAD
+}
+
+/**
+ * Bar fill for one core. Only when LOCKED is the bar the clock relative to its max;
+ * otherwise it is the load, and empty without one — it never silently switches meaning.
+ */
+internal fun coreFraction(mode: CpuMode, load: Double?, curKhz: Long?, maxKhz: Long?): Double =
+    if (mode == CpuMode.LOCKED) {
+        if (curKhz != null && maxKhz != null && maxKhz > 0) curKhz.toDouble() / maxKhz else 0.0
+    } else {
+        load ?: 0.0
+    }
+
+/** The overall CPU line: [lockedText] when LOCKED, else bar and load (placeholder in WARMUP). */
+internal fun cpuHeader(sb: StringBuilder, mode: CpuMode, load: Double?, lockedText: String) {
+    if (mode == CpuMode.LOCKED) {
+        sb.append(lockedText).append('\n')
+        return
+    }
+    val l = if (mode == CpuMode.LOAD) load else null
+    sb.append("CPU  ").append(bar(l ?: 0.0)).append(l?.let(::pct) ?: PCT_NONE).append('\n')
+}
+
+/** One per-core line: name, bar, load column (not when LOCKED), current clock. */
+internal fun coreLine(sb: StringBuilder, name: String, mode: CpuMode, load: Double?, curKhz: Long?, maxKhz: Long?) {
+    val l = if (mode == CpuMode.LOAD) load else null
+    sb.append(name.padEnd(5)).append(bar(coreFraction(mode, l, curKhz, maxKhz)))
+    if (mode != CpuMode.LOCKED) sb.append(l?.let(::pct) ?: PCT_NONE)
+    if (curKhz != null) sb.append(' ').append(curKhz / 1000).append("MHz")
+    sb.append('\n')
+}
 
 /** /proc/meminfo -> Key -> kB */
 internal fun parseMeminfo(text: String): Map<String, Long> {
@@ -62,12 +107,18 @@ internal fun parseMeminfo(text: String): Map<String, Long> {
 /** First three fields of /proc/loadavg. */
 internal fun parseLoadavg(text: String): String = text.split(' ').take(3).joinToString(" ")
 
-/** Millidegrees or degrees -> °C; null when unparsable or implausible. */
+/**
+ * Millidegrees, degrees or decidegrees -> °C; null when unparsable or implausible.
+ * Above ±1000 the value is millidegrees. Below, whole degrees win when plausible
+ * (so 100 stays 100 °C); otherwise decidegrees are tried (450 -> 45.0 °C).
+ */
 internal fun parseTemp(raw: String?): Double? {
     val v = raw?.toLongOrNull() ?: return null
-    val c = if (v > MILLI_THRESHOLD || v < -MILLI_THRESHOLD) v / 1000.0 else v.toDouble()
-    return if (c > TEMP_MIN_C && c < TEMP_MAX_C) c else null
+    if (v > MILLI_THRESHOLD || v < -MILLI_THRESHOLD) return plausibleTemp(v / 1000.0)
+    return plausibleTemp(v.toDouble()) ?: plausibleTemp(v / 10.0)
 }
+
+private fun plausibleTemp(c: Double): Double? = if (c > TEMP_MIN_C && c < TEMP_MAX_C) c else null
 
 // Qualcomm: cpu-*, cpuss-*; MediaTek: cpu_*; Tensor/Exynos: big/mid/little
 /** [type] is expected lowercase. */
@@ -98,6 +149,29 @@ internal fun tempState(scan: ZoneScan, readableTemps: Int): TempState = when {
 }
 
 internal fun thermalStatusName(status: Int): String = THERMAL_STATUS.getOrNull(status) ?: "?"
+
+/**
+ * One temperature row: 5-column label, 15-column name (at most 14 shown), value, optional
+ * [suffix]. Every row in the Temp block goes through here, so the values share one column.
+ */
+internal fun tempRow(sb: StringBuilder, label: String, name: String, c: Double, suffix: String = "") {
+    sb.append(label.padEnd(5)).append(name.take(14).padEnd(15)).append(deg(c)).append(suffix).append('\n')
+}
+
+/** CPU zone temperatures: one row each up to [MAX_TEMP_LINES], else average, max and count. */
+internal fun cpuTempLines(sb: StringBuilder, temps: List<Pair<String, Double>>) {
+    if (temps.size <= MAX_TEMP_LINES) {
+        var label = "Temp"
+        for ((name, t) in temps) {
+            tempRow(sb, label, name, t)
+            label = ""
+        }
+        return
+    }
+    val avg = temps.sumOf { it.second } / temps.size
+    val max = temps.maxOf { it.second }
+    tempRow(sb, "Temp", "cpu Ø (${temps.size})", avg, "  max " + deg(max))
+}
 
 internal fun bar(frac: Double): String {
     val n = (frac.coerceIn(0.0, 1.0) * BAR_W + 0.5).toInt()
