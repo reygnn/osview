@@ -54,4 +54,4 @@ AndroidX — just the platform and the Kotlin stdlib, shrunk with R8.
 
 ## License
 
-To be added.
+[GPL-3.0](LICENSE)
